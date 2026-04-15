@@ -25,6 +25,9 @@ credentials.*
 *_credentials*
 config.local.*
 
+# Local data files
+data/
+
 # API tokens & OAuth
 token.json
 tokens.json

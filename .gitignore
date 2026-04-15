@@ -61,3 +61,7 @@ env/
 dist/
 build/
 *.egg-info/
+
+notes/
+# Generated analysis outputs
+analysis/

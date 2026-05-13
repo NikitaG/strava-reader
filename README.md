@@ -4,6 +4,14 @@ Toolkit for learning the Strava export format, extracting running metrics, and e
 
 ## Main Workflows
 
+Unzip a new Strava export (defaults to `data/export_6221222.zip`):
+
+```bash
+python3 unzip_export.py
+# or with a different file:
+python3 unzip_export.py data/export_XXXXXXX.zip
+```
+
 Basic export inspection:
 
 ```bash

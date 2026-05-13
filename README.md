@@ -34,7 +34,6 @@ The running analysis command writes:
 - `analysis/run_splits.csv`
 - `analysis/weekly_aggregates.csv`
 - `analysis/key_metrics.csv`
-- `analysis/dashboard.md`
 - `analysis/charts/*.svg`
 
 ## Data Sources

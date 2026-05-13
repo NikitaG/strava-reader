@@ -170,7 +170,7 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def load_runs() -> list[Activity]:
+def load_runs(since: datetime | None = None, until: datetime | None = None) -> list[Activity]:
     runs: list[Activity] = []
     with ACTIVITIES_CSV.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -178,6 +178,10 @@ def load_runs() -> list[Activity]:
             if (row.get("Activity Type") or "").strip() != "Run":
                 continue
             dt = parse_date(row["Activity Date"])
+            if since is not None and dt < since:
+                continue
+            if until is not None and dt > until:
+                continue
             distance_km = (parse_float(row.get("Distance")) or 0.0) / 1000.0
             moving_time_min = (parse_float(row.get("Moving Time")) or 0.0) / 60.0
             elapsed_time_min = (parse_float(row.get("Elapsed Time")) or 0.0) / 60.0
@@ -875,133 +879,10 @@ def svg_bar_chart(path: Path, title: str, labels: list[str], values: list[float]
     path.write_text("\n".join(svg), encoding="utf-8")
 
 
-def hm_readiness(runs: list[Activity], weeks: list[WeeklyAggregate]) -> tuple[int, str, list[str]]:
-    cutoff = runs[-1].date - timedelta(days=42)
-    recent_runs = [r for r in runs if r.date >= cutoff]
-    recent_weeks = [w for w in weeks if w.week_start >= cutoff - timedelta(days=cutoff.weekday())]
-
-    tempo_runs = [r for r in recent_runs if r.flags.get("tempo_threshold")]
-    easy_eff = median(r.pace_at_hr140_est for r in recent_runs if r.pace_at_hr140_est)
-    longest = max((r.distance_km for r in recent_runs), default=0.0)
-    weekly_distances = [w.total_distance_km for w in recent_weeks]
-    avg_weekly = statistics.mean(weekly_distances) if weekly_distances else 0.0
-    cv = statistics.pstdev(weekly_distances) / avg_weekly if weekly_distances and avg_weekly else 1.0
-    recovery_gaps = [r.days_since_last_hard for r in recent_runs if r.days_since_last_hard is not None and r.flags.get("easy")]
-    fatigue_rate = sum(1 for r in recent_runs if r.fatigue_flag) / len(recent_runs) if recent_runs else 1.0
-    tempo_pace = median(r.avg_pace_per_km for r in tempo_runs if r.avg_hr and 155 <= r.avg_hr <= 160 and r.avg_pace_per_km)
-
-    score = 0
-    notes: list[str] = []
-
-    if tempo_pace is not None and tempo_pace <= 5.33:
-        score += 30
-        notes.append(f"Recent tempo pace around HR155-160 is {format_pace(tempo_pace)}, which is close to or faster than sub-1:50 HM pace.")
-    elif tempo_pace is not None and tempo_pace <= 5.55:
-        score += 20
-        notes.append(f"Recent tempo pace around HR155-160 is {format_pace(tempo_pace)}. This is in range but still needs consolidation.")
-    else:
-        notes.append("Recent tempo data is limited or slower than ideal for a sub-1:50 half marathon.")
-
-    if easy_eff is not None and easy_eff <= 6.1:
-        score += 20
-        notes.append(f"Estimated pace at HR140 is {format_pace(easy_eff)}, a strong aerobic signal.")
-    elif easy_eff is not None and easy_eff <= 6.4:
-        score += 12
-        notes.append(f"Estimated pace at HR140 is {format_pace(easy_eff)}, which is decent but still improvable.")
-    else:
-        notes.append("Easy-run efficiency is not yet strong enough or lacks enough steady data.")
-
-    if avg_weekly >= 35 and cv <= 0.35:
-        score += 20
-        notes.append(f"Recent weekly volume is consistent at {avg_weekly:.1f} km/week.")
-    elif avg_weekly >= 25:
-        score += 12
-        notes.append(f"Recent weekly volume averages {avg_weekly:.1f} km/week, workable but a bit light.")
-    else:
-        notes.append("Weekly running volume is on the low side for confident sub-1:50 readiness.")
-
-    if longest >= 18:
-        score += 15
-        notes.append(f"Longest recent run is {longest:.1f} km, which supports HM durability.")
-    elif longest >= 15:
-        score += 10
-        notes.append(f"Longest recent run is {longest:.1f} km, close but still short of ideal HM support.")
-    else:
-        notes.append("Long runs are shorter than ideal for half-marathon readiness.")
-
-    avg_gap = statistics.mean(recovery_gaps) if recovery_gaps else None
-    if avg_gap is not None and avg_gap >= 2.0 and fatigue_rate <= 0.2:
-        score += 15
-        notes.append("Recovery spacing between hard sessions looks healthy.")
-    elif avg_gap is not None and avg_gap >= 1.5:
-        score += 8
-        notes.append("Recovery is acceptable, but there are some tighter turnarounds or fatigue flags.")
-    else:
-        notes.append("Recovery quality is hard to confirm or may need more spacing between harder sessions.")
-
-    verdict = "Not ready yet"
-    if score >= 75:
-        verdict = "Likely ready"
-    elif score >= 55:
-        verdict = "Close, but not fully proven"
-    return score, verdict, notes
 
 
-def write_dashboard(runs: list[Activity], splits: list[Split], weeks: list[WeeklyAggregate]) -> None:
-    score, verdict, notes = hm_readiness(runs, weeks)
-    latest = runs[-1]
-    recent = [r for r in runs if r.date >= runs[-1].date - timedelta(days=42)]
-    pace140 = median(r.pace_at_hr140_est for r in recent if r.pace_at_hr140_est)
-    tempo_pace = median(r.avg_pace_per_km for r in recent if r.flags.get("tempo_threshold") and r.avg_hr and 155 <= r.avg_hr <= 160 and r.avg_pace_per_km)
-    long_runs = [r for r in recent if r.flags.get("long_run")]
-    avg_long_hr = median(r.avg_hr for r in long_runs if r.avg_hr)
-    avg_pace_fade = median(r.pace_fade_last_third_pct for r in long_runs if r.pace_fade_last_third_pct is not None)
-    avg_easy_drift = median(r.hr_drift_pct for r in recent if r.flags.get("easy") and r.hr_drift_pct is not None)
-
-    lines = [
-        "# Running Progress Dashboard",
-        "",
-        f"Generated from Strava export through {latest.date.strftime('%Y-%m-%d')}",
-        "",
-        "## Half-Marathon Readiness",
-        "",
-        f"- Verdict: {verdict}",
-        f"- Score: {score}/100",
-        "- Goal pace: 5:13/km for sub-1:50 HM",
-        "",
-    ]
-    for note in notes:
-        lines.append(f"- {note}")
-
-    lines += [
-        "",
-        "## Key Metrics",
-        "",
-        f"- Pace at HR140 (6-week median estimate): {format_pace(pace140)}",
-        f"- Tempo pace at HR155-160: {format_pace(tempo_pace)}",
-        f"- Average HR during long runs: {avg_long_hr:.0f} bpm" if avg_long_hr is not None else "- Average HR during long runs: -",
-        f"- Pace fade in last third of long runs: {avg_pace_fade:.1f}%" if avg_pace_fade is not None else "- Pace fade in last third of long runs: unavailable",
-        f"- HR drift on easy runs: {avg_easy_drift:.1f}%" if avg_easy_drift is not None else "- HR drift on easy runs: unavailable",
-        "",
-        "## Notes",
-        "",
-        "- Session classification is inferred from distance, heart rate, elevation, and naming patterns, so treat it as a coaching aid rather than ground truth.",
-        "- Split-based metrics are derived from GPX/FIT record streams when present; activities without enough raw samples stay at activity-level only.",
-        "- Weather adjustment is limited by missing weather fields in many activities, so unusually slow/high-HR days are flagged conservatively.",
-        "",
-        "## Output Files",
-        "",
-        "- `analysis/per_activity_runs.csv`",
-        "- `analysis/run_splits.csv`",
-        "- `analysis/weekly_aggregates.csv`",
-        "- `analysis/key_metrics.csv`",
-    ]
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "dashboard.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def build_outputs() -> None:
-    runs = load_runs()
+def build_outputs(since: datetime | None = None, until: datetime | None = None) -> None:
+    runs = load_runs(since=since, until=until)
     km_splits, km_split_map, lap_splits, lap_split_map, workout_splits, workout_split_map = attach_split_metrics(runs)
     classify_runs(runs, workout_split_map)
     apply_split_derived_metrics(runs, km_split_map)
@@ -1135,7 +1016,6 @@ def build_outputs() -> None:
         )
     write_csv(OUTPUT_DIR / "key_metrics.csv", list(key_rows[0].keys()) if key_rows else ["date"], key_rows)
 
-    write_dashboard(runs, km_splits, weeks)
 
     week_labels = [w.week_start.strftime("%Y-%m-%d") for w in weeks]
     svg_line_chart(CHARTS_DIR / "weekly_mileage_trend.svg", "Weekly Mileage Trend", week_labels, [w.total_distance_km for w in weeks])
@@ -1150,13 +1030,17 @@ def build_outputs() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Extract running progress data from a Strava export.")
     parser.add_argument("command", choices=["build"], help="Generate structured analysis outputs")
+    parser.add_argument("--since", metavar="YYYY-MM-DD", help="Only include activities on or after this date")
+    parser.add_argument("--until", metavar="YYYY-MM-DD", help="Only include activities on or before this date")
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     if args.command == "build":
-        build_outputs()
+        since = datetime.strptime(args.since, "%Y-%m-%d") if args.since else None
+        until = datetime.strptime(args.until, "%Y-%m-%d").replace(hour=23, minute=59, second=59) if args.until else None
+        build_outputs(since=since, until=until)
         print(f"Wrote analysis outputs to {OUTPUT_DIR}")
 
 
